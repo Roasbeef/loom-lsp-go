@@ -1,0 +1,147 @@
+# Proves this profile against Loom: builds Loom, installs this repository
+# from its checkout, and runs the profile's [[check]]s through the jail.
+# The job's result is the exit code of `loomd ext check lsp_go`.
+#
+# The toolchain, sandbox and cgroup setup follow the "jail (linux)" job of
+# Loom's own .github/workflows/ci.yml, and the action SHAs are copied from
+# it. Loom is built with the stock Gleam release, as that workflow's
+# "stock compiler" job does; the patched compiler it uses elsewhere is not
+# needed to build loomd.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # The Loom revision this profile is proven against. It is a branch name
+  # for now, because Loom's LSP stack (PRs #514, #516 and #521) has not
+  # merged. Once it has, repin this to a commit SHA on Loom's main, and
+  # change it to re-prove the profile against a newer Loom.
+  LOOM_REV: lsp/profile-extensions
+  # Copied from Loom's ci.yml.
+  GLEAM_VERSION: "1.18.1"
+  OTP_VERSION: "29.0.5"
+  REBAR3_VERSION: "3.27.0"
+  GO_VERSION: "1.26.3"
+
+jobs:
+  check:
+    name: check lsp_go
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      # This repository goes into profile/ and Loom into loom/, so the
+      # installed tree is exactly this repository and nothing of Loom's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: profile
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Roasbeef/loom
+          ref: ${{ env.LOOM_REV }}
+          path: loom
+          persist-credentials: false
+
+      # Gleam and Erlang/OTP build loomd and run it. Go builds the sandbox
+      # helper, and, where a profile needs it, is also the language toolchain.
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          version-type: strict
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      # bwrap does the namespace and mount work in the jail, and ripgrep
+      # is what a bare-name question searches the project with inside it.
+      # Ubuntu 24.04 refuses unprivileged user namespaces through AppArmor,
+      # so the restriction is lifted, as Loom's jail lane does.
+      - name: Give the runner a kernel the sandbox can use
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap ripgrep
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ||
+              echo "could not lift the AppArmor userns restriction"
+            echo "apparmor_restrict_unprivileged_userns now: $(cat "$knob")"
+          else
+            echo "no AppArmor userns restriction on this kernel"
+          fi
+
+      # A delegated, process-empty cgroup v2 base, the shape the helper
+      # runs in under systemd. The two probes prove the delegation is not
+      # hollow: the limit files exist, and an unprivileged process can
+      # migrate into a child of the base.
+      - name: Delegate a cgroup v2 base to the helper
+        run: |
+          set -euo pipefail
+          base=/sys/fs/cgroup/loom.slice
+          sudo mkdir -p "$base"
+          sudo sh -c 'echo "+memory +pids" > /sys/fs/cgroup/cgroup.subtree_control' ||
+            echo "root subtree_control unchanged (already set, or refused)"
+          sudo sh -c "echo '+memory +pids' > $base/cgroup.subtree_control"
+          sudo chown -R "$(id -u):$(id -g)" "$base"
+          mkdir -p "$base/ci-probe" "$base/supervisor"
+          test -w "$base/ci-probe/memory.max"
+          test -w "$base/ci-probe/pids.max"
+          sh -c 'exec sleep 60' &
+          probe_pid=$!
+          sudo sh -c "echo $probe_pid > '$base/supervisor/cgroup.procs'"
+          if ! echo "$probe_pid" > "$base/ci-probe/cgroup.procs"; then
+            echo "delegation is hollow: an unprivileged migration into a child of $base was refused"
+            kill "$probe_pid" 2>/dev/null || true
+            exit 1
+          fi
+          grep -qx "$probe_pid" "$base/ci-probe/cgroup.procs"
+          kill "$probe_pid" 2>/dev/null || true
+          wait "$probe_pid" 2>/dev/null || true
+          rmdir "$base/ci-probe"
+          echo "LOOM_CGROUP_BASE=$base" >> "$GITHUB_ENV"
+
+      # The smallest builds that give a runnable loomd and the helper:
+      # `make sandbox` builds packages/sandbox/loom-exec, and
+      # `make server-shipment` exports the server and writes bin/loomd. The
+      # latter depends on the code-mode seed, which a profile does not use
+      # but the target requires. Hex is rate-limited per runner address, so
+      # the gleam-invoking steps go through Loom's retry wrapper.
+      - name: Build the sandbox helper
+        run: make -C loom sandbox
+
+      - name: Build loomd
+        run: loom/.github/scripts/hex_retry.sh make -C loom server-shipment
+
+      # gopls at the version Loom's own jail lane pins, which is the one the
+      # profile's checks were measured against.
+      - name: Install gopls
+        run: |
+          set -euo pipefail
+          go install golang.org/x/tools/gopls@v0.23.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gopls" version
+
+      - name: Install the profile and check it
+        run: |
+          set -euo pipefail
+          . loom/.github/scripts/join_delegated_cgroup.sh
+          loomd="$GITHUB_WORKSPACE/loom/bin/loomd"
+          helper="$GITHUB_WORKSPACE/loom/packages/sandbox/loom-exec"
+          "$loomd" ext install "$GITHUB_WORKSPACE/profile" --helper "$helper"
+          "$loomd" ext check lsp_go --helper "$helper"
