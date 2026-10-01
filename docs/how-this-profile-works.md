@@ -192,9 +192,8 @@ manual dispatch. Its single job proves the profile against a real Loom:
 ### Re-proving against a newer Loom
 
 `LOOM_REV` in the workflow's `env` block is the Loom revision the profile
-is proven against. At the time of writing it is a branch name, because
-Loom's language-server work had not merged; the comment beside it says to
-repin it to a commit SHA on Loom's `main` once it has. To re-prove the
+is proven against: a commit SHA on Loom's `main`, starting at the merge
+that landed language-server support (loom#680). To re-prove the
 profile against a newer Loom, change that one value, push, and read the
 `check lsp_go` job. A failure prints a `FAIL` line naming the expected
 and the actual sites. To do the same by hand, build `loomd` from that

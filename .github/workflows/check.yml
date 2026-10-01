@@ -23,11 +23,10 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
-  # The Loom revision this profile is proven against. It is a branch name
-  # for now, because Loom's LSP stack (PRs #514, #516 and #521) has not
-  # merged. Once it has, repin this to a commit SHA on Loom's main, and
-  # change it to re-prove the profile against a newer Loom.
-  LOOM_REV: lsp/profile-extensions
+  # The Loom revision this profile is proven against: a commit on Loom's
+  # main, the merge that landed language-server support (loom#680). Change
+  # it to re-prove the profile against a newer Loom.
+  LOOM_REV: 139efc84a766aa4c4f6a01e11d119011d123f964
   # Copied from Loom's ci.yml.
   GLEAM_VERSION: "1.18.1"
   OTP_VERSION: "29.0.5"
