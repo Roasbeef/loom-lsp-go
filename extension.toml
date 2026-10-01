@@ -2,6 +2,11 @@
 # (language profiles). The [lsp.go] table is exactly what `loom.toml`
 # would carry; installing this extension approves it, and
 # `loom ext check lsp_go` proves it against the module in fixture/.
+# docs/how-this-profile-works.md walks through every key below.
+#
+# `name` is what `loomd ext check` takes. `tier = "profile"` marks the
+# extension as data only: language-server tables and checks, and no tools,
+# hooks or network policy, which Loom would refuse.
 [extension]
 name = "lsp_go"
 version = "0.1.0"
@@ -51,8 +56,12 @@ env = ["GOFLAGS"]
 # splits it.
 hint = "Qualify a name with its package name as imported: util.Greet"
 
-# A qualified name, found by searching the module and narrowed by the
-# package directory the qualifier names.
+# A check asks one question of the running server through the door Loom's
+# tools use, and `expect` lists the sites the answer must equal, as a set
+# of fixture-relative path:line: two hits on one line count once.
+#
+# This one asks for a qualified name, found by searching the module and
+# narrowed by the package directory the qualifier names.
 [[check]]
 server = "go"
 query = "definition"

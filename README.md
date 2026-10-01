@@ -47,6 +47,10 @@ puts `gopls` in `~/go/bin`, which is on few), and `rg`. `gopls` runs
 `util.Greet`'s definition and its references. A `loom.toml` table named
 `go` replaces this profile whole.
 
+[docs/how-this-profile-works.md](docs/how-this-profile-works.md) walks
+through `extension.toml` key by key, what the checks prove, and what the
+CI does.
+
 ## Maintenance
 
 This repository is the maintained `lsp_go` profile. Its CI
